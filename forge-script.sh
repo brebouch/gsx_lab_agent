@@ -1,0 +1,146 @@
+#!/bin/bash
+
+# Ensure logging directory exists
+mkdir -p /coin-forge
+
+# Log function for better readability
+log() {
+    echo "$(date +'%Y-%m-%d %H:%M:%S') - $1" >> /coin-forge/health-script.log
+}
+
+log "---- Script started ----"
+
+# Set strict error handling after log function is defined and used
+set -euo pipefail
+
+# Log file configuration
+LOG_FILE="/coin-forge/health-script.log"
+MAX_LOG_SIZE=$((5 * 1024 * 1024))  # 5 MB
+
+# Check if the log file exceeds the maximum size and handle it
+if [[ -f "$LOG_FILE" && $(stat -c%s "$LOG_FILE") -gt $MAX_LOG_SIZE ]]; then
+    log "Log file size exceeded $MAX_LOG_SIZE bytes. Deleting and recreating the log file."
+    rm -f "$LOG_FILE"
+    touch "$LOG_FILE"
+fi
+
+# Check if cfg.json exists
+if [[ ! -f "/coin-forge/cfg.json" ]]; then
+    log "Error: cfg.json file not found."
+    exit 1
+fi
+
+# Set safe defaults
+DEVICE_HOSTNAME=""
+CONTROLLER_IP=""
+TARGET_URL=""
+
+
+# Parse cfg.json without jq
+CONTROLLER_IP=$(grep '"CONTROLLER_IP"' /coin-forge/cfg.json | awk -F'"' '{print $4}')
+TARGET_URL=$(grep '"TARGET_URL"' /coin-forge/cfg.json | awk -F'"' '{print $4}')
+DEVICE_HOSTNAME=$(grep '"COIN_FORGE_HOST"' /coin-forge/cfg.json | awk -F'"' '{print $4}')
+
+log "CONTROLLER_IP: $CONTROLLER_IP"
+log "TARGET_URL: $TARGET_URL"
+log "DEVICE_HOSTNAME: $DEVICE_HOSTNAME"
+
+# Validate that values are not null
+if [[ -z "$CONTROLLER_IP" || -z "$TARGET_URL" ]]; then
+    log "Error: CONTROLLER_IP or TARGET_URL is missing in cfg.json."
+    exit 1
+fi
+
+if [[ -z "$DEVICE_HOSTNAME" ]]; then
+    DEVICE_HOSTNAME=$(hostname)
+    log "DEVICE_HOSTNAME not found in cfg.json, using system hostname: $DEVICE_HOSTNAME"
+fi
+
+# Get primary IP address (IPv4, non-loopback)
+DEVICE_IP=$(ifconfig | awk '/inet addr:/{if ($2 != "127.0.0.1") print $2}' | head -n1 | cut -d: -f2)
+log "DEVICE_IP: $DEVICE_IP"
+if [[ -z "$DEVICE_IP" ]]; then
+    log "Error: Unable to determine DEVICE_IP."
+    exit 1
+fi
+
+# Get primary interface name
+PRIMARY_IF=$(ip route | awk '/default/ {print $5; exit}')
+log "PRIMARY_IF: $PRIMARY_IF"
+if [[ -z "$PRIMARY_IF" ]]; then
+    log "Error: Unable to determine PRIMARY_IF."
+    exit 1
+fi
+
+# Get current CPU utilization (percentage, last 1 min)
+CPU_LINE=$(top -bn2 | grep "Cpu(s)" | tail -n 1)
+CPU_IDLE=$(echo "$CPU_LINE" | awk '{for(i=1;i<=NF;i++) if ($i ~ /id,/) print $(i-1)}' | sed 's/,//')
+if [[ -z "$CPU_IDLE" ]]; then
+    # Fallback for older top output
+    CPU_IDLE=$(echo "$CPU_LINE" | awk '{print $8}')
+fi
+CPU_UTIL=$(awk -v idle="$CPU_IDLE" 'BEGIN {printf "%.1f", 100 - idle}')
+log "CPU_UTIL: $CPU_UTIL (Idle: $CPU_IDLE)"
+
+# Get current memory usage (used/total in MB)
+MEM_TOTAL=$(free -m | awk '/Mem:/ {print $2}')
+MEM_USED=$(free -m | awk '/Mem:/ {print $3}')
+log "MEM_TOTAL: $MEM_TOTAL"
+log "MEM_USED: $MEM_USED"
+
+# Get total bytes in and out on primary interface
+BYTES_IN=$(cat /proc/net/dev | awk -v iface="$PRIMARY_IF" '$1 ~ iface":" {gsub(/:/,"",$1); print $2}')
+BYTES_OUT=$(cat /proc/net/dev | awk -v iface="$PRIMARY_IF" '$1 ~ iface":" {gsub(/:/,"",$1); print $10}')
+log "BYTES_IN: $BYTES_IN"
+log "BYTES_OUT: $BYTES_OUT"
+
+if [[ -z "$BYTES_IN" || -z "$BYTES_OUT" ]]; then
+    log "Error: Unable to fetch network byte counts."
+    exit 1
+fi
+
+# Check reachability
+log "Testing reachability of $TARGET_URL..."
+if curl --silent --head "$TARGET_URL" > /dev/null; then
+    log "Successfully reached $TARGET_URL. Preparing to send health-check to $CONTROLLER_IP..."
+    REACHABLE=true
+else
+    log "Error: Failed to reach $TARGET_URL."
+    REACHABLE=false
+fi
+
+# Prepare JSON payload
+PAYLOAD=$(cat <<EOF
+{
+  "ip": "$DEVICE_IP",
+  "hostname": "$DEVICE_HOSTNAME",
+  "cpu_utilization": "$CPU_UTIL",
+  "memory_used_mb": "$MEM_USED",
+  "memory_total_mb": "$MEM_TOTAL",
+  "network_bytes_in": "$BYTES_IN",
+  "network_bytes_out": "$BYTES_OUT",
+  "remote_connection": $REACHABLE
+}
+EOF
+)
+
+log "Payload prepared: $PAYLOAD"
+
+# POST data to health-check endpoint
+log "Sending POST request to http://$CONTROLLER_IP:5000/health-check"
+
+HTTP_RESPONSE=$(curl --write-out "%{http_code}" --silent --output /dev/null -X POST \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD" \
+    "http://$CONTROLLER_IP:5000/health-check")
+
+log "HTTP response code: $HTTP_RESPONSE"
+
+if [[ "$HTTP_RESPONSE" -eq 200 ]]; then
+    log "Health-check POST successful."
+else
+    log "Error: Health-check POST failed with HTTP status $HTTP_RESPONSE."
+    exit 1
+fi
+
+log "Health-check script completed successfully."
