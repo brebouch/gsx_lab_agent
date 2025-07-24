@@ -127,22 +127,56 @@ EOF
 )
 log "Payload prepared: $PAYLOAD"
 
-# POST data to health-check endpoint
-log "Sending POST request to http://$CONTROLLER_IP:5000/health-check"
+# POST data to health-check endpoint and capture response
+HEALTH_CHECK_URL="http://$CONTROLLER_IP:5000/health-check"
+log "Sending POST request to $HEALTH_CHECK_URL"
 
-HTTP_RESPONSE=""
-HTTP_RESPONSE=$(curl --write-out "%{http_code}" --silent --output /dev/null -X POST \
+HTTP_RESPONSE_BODY=""
+HTTP_STATUS_CODE=""
+HTTP_RESPONSE_TMP=$(mktemp)
+
+# Send POST and capture the HTTP status and body
+HTTP_STATUS_CODE=$(curl --silent --show-error --fail -X POST \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD" \
-    "http://$CONTROLLER_IP:5000/health-check") || HTTP_RESPONSE=""
+    -w "%{http_code}" \
+    -o "$HTTP_RESPONSE_TMP" \
+    "$HEALTH_CHECK_URL" 2>>"$LOG_FILE")
 
-log "HTTP response code: $HTTP_RESPONSE"
+HTTP_RESPONSE_BODY=$(cat "$HTTP_RESPONSE_TMP")
+rm -f "$HTTP_RESPONSE_TMP"
 
-if [[ "$HTTP_RESPONSE" -eq 200 ]]; then
-    log "Health-check POST successful."
-else
-    log "Error: Health-check POST failed with HTTP status $HTTP_RESPONSE."
+log "HTTP response code: $HTTP_STATUS_CODE"
+log "HTTP response body: $HTTP_RESPONSE_BODY"
+
+if [[ "$HTTP_STATUS_CODE" -ne 200 ]]; then
+    log "Error: Health-check POST failed with HTTP status $HTTP_STATUS_CODE."
     exit 1
+fi
+
+# Extract 'initiate_incident' value from JSON (true/false)
+INITIATE_INCIDENT=$(echo "$HTTP_RESPONSE_BODY" | grep -o '"initiate_incident":[ ]*\(true\|false\)' | head -n1 | awk -F: '{gsub(/[ \t]/,"",$2); print $2}')
+log "initiate_incident in response: $INITIATE_INCIDENT"
+
+if [[ "$INITIATE_INCIDENT" == "true" ]]; then
+    log "initiate_incident is true! Updating cfg.json and notifying controller..."
+
+    # Update /coin-forge/cfg.json: set INITIATE_ATTACK to true
+    CFG_FILE="/coin-forge/cfg.json"
+    TMP_CFG=$(mktemp)
+
+    # Replace the value for INITIATE_ATTACK (whether true or false) with true
+    # Handles both "INITIATE_ATTACK":false and "INITIATE_ATTACK": false
+    sed -E 's/("INITIATE_ATTACK"[ ]*:[ ]*)false/\1true/' "$CFG_FILE" > "$TMP_CFG"
+    mv "$TMP_CFG" "$CFG_FILE"
+    log "Updated /coin-forge/cfg.json: INITIATE_ATTACK set to true."
+
+    # Notify controller via attack-initiated endpoint
+    ATTACK_INITIATED_URL="http://$CONTROLLER_IP:5000/attack-initiated"
+    ATTACK_RESP=$(curl --silent --show-error --fail -X POST "$ATTACK_INITIATED_URL" -H "Content-Type: application/json" -d '{}' 2>>"$LOG_FILE" || echo "error")
+    log "Sent POST to $ATTACK_INITIATED_URL. Response: $ATTACK_RESP"
+else
+    log "initiate_incident is not true; nothing to do."
 fi
 
 log "Health-check script completed successfully."
