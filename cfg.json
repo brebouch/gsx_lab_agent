@@ -1,6 +1,6 @@
 {
-  "CONTROLLER_IP": "127.0.0.1",
+  "CONTROLLER_IP": "198.18.5.179",
   "TARGET_URL": "https://cisco.com",
-  "COIN_FORGE_HOST": "CoinForge-1",
+  "COIN_FORGE_HOST": "CoinForge-3",
   "INITIATE_ATTACK": false
 }

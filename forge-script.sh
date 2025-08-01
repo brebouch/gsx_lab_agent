@@ -101,7 +101,7 @@ fi
 
 # Check reachability
 log "Testing reachability of $TARGET_URL..."
-if curl --silent --head "$TARGET_URL" > /dev/null; then
+if curl --silent --head "$TARGET_URL" --insecure > /dev/null; then
     log "Successfully reached $TARGET_URL. Preparing to send health-check to $CONTROLLER_IP..."
     REACHABLE=true
 else

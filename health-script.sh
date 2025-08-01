@@ -167,7 +167,7 @@ if [[ "$INITIATE_INCIDENT" == "true" ]]; then
 
     # Replace the value for INITIATE_ATTACK (whether true or false) with true
     # Handles both "INITIATE_ATTACK":false and "INITIATE_ATTACK": false
-    sed -E 's/("INITIATE_ATTACK"[ ]*:[ ]*)false/\1true/' "$CFG_FILE" > "$TMP_CFG"
+    sed 's/\("INITIATE_ATTACK"[ ]*:[ ]*\)false/\1true/' "$CFG_FILE" > "$TMP_CFG"
     mv "$TMP_CFG" "$CFG_FILE"
     log "Updated /coin-forge/cfg.json: INITIATE_ATTACK set to true."
 
