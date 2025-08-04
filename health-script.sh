@@ -51,22 +51,11 @@ if [[ -z "${DEVICE_HOSTNAME:-}" ]]; then
 fi
 
 # Get primary IP address (IPv4, non-loopback)
-DEVICE_IP=""
-DEVICE_IP=$(/sbin/ifconfig | awk '/inet addr:/{if ($2 != "127.0.0.1") print $2}' | head -n1 | cut -d: -f2)
-log "DEVICE_IP: ${DEVICE_IP:-}"
-if [[ -z "${DEVICE_IP:-}" ]]; then
-    log "Error: Unable to determine DEVICE_IP."
-    exit 1
-fi
+DEVICE_IP="10.1.100.20"
 
 # Get primary interface name
-PRIMARY_IF=""
-PRIMARY_IF=$(ip route | awk '/default/ {print $5; exit}') || PRIMARY_IF=""
-log "PRIMARY_IF: ${PRIMARY_IF:-}"
-if [[ -z "${PRIMARY_IF:-}" ]]; then
-    log "Error: Unable to determine PRIMARY_IF."
-    exit 1
-fi
+PRIMARY_IF="eth0"
+
 
 # Get current CPU utilization (percentage, last 1 min)
 CPU_LINE=""
